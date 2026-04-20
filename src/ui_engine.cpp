@@ -29,20 +29,15 @@ static constexpr int Y_MEM_BAR     =  49; // bar top
 static constexpr int Y_MEM_BAR_H   =   5; // bar height
 static constexpr int Y_H3          =  57; // solid
 
-static constexpr int Y_NET_TXT     =  60;
+static constexpr int Y_UPIP_TXT    =  60;
 static constexpr int Y_H4          =  70; // dotted
 
-static constexpr int Y_UP_TXT      =  73;
-static constexpr int Y_H5          =  83; // solid
-
-static constexpr int Y_LOG_HDR     =  86;
-static constexpr int Y_H6          =  95; // dotted
-static constexpr int Y_LOG_L0      =  97;
-static constexpr int Y_LOG_L1      = 106;
-static constexpr int Y_LOG_L2      = 115; // (may be clipped, 122-115=7px)
-
-static constexpr int Y_H7          = 112; // solid — footer separator
-static constexpr int Y_FOOTER_TXT  = 114;
+static constexpr int Y_LOG_L0      =  72;
+static constexpr int Y_LOG_L1      =  80;
+static constexpr int Y_LOG_L2      =  88;
+static constexpr int Y_LOG_L3      =  96;
+static constexpr int Y_LOG_L4      = 104;
+static constexpr int Y_LOG_L5      = 112;
 
 // Grid: vertical separator between left/right columns
 static constexpr int X_SPLIT       = 124;
@@ -51,7 +46,9 @@ static constexpr int X_SPLIT       = 124;
 // Constructor / destructor
 // ---------------------------------------------------------------------------
 
-UIEngine::UIEngine() : buffer_(nullptr), seq_(0) {}
+UIEngine::UIEngine() : buffer_(nullptr), frame_count_(0), terminal_seeded_(false) {
+    terminal_lines_.fill("> WAITING FOR TELEMETRY ...");
+}
 
 UIEngine::~UIEngine() {
     free(buffer_);
@@ -162,73 +159,139 @@ void UIEngine::draw_metrics(const SystemMetrics &m) {
     draw_bar(2, Y_MEM_BAR, CANVAS_W - 4, Y_MEM_BAR_H,
              static_cast<float>(m.mem_pct));
     draw_hline(Y_H3);
-}
 
-void UIEngine::draw_network(const SystemMetrics &m) {
-    // IFACE | IP
-    char nl[24], nr[32];
-    snprintf(nl, sizeof(nl), "IFACE %-6s", m.iface.c_str());
-    snprintf(nr, sizeof(nr), "IP    %s",   m.ip.c_str());
-    Paint_DrawString_EN(2,          Y_NET_TXT, nl, &Font8, WHITE, BLACK);
+    // UP | IP
+    char ul[24], ur[32];
+    snprintf(ul, sizeof(ul), "UP    %s", m.uptime_str);
+    snprintf(ur, sizeof(ur), "IP    %s", m.ip.c_str());
+    Paint_DrawString_EN(2,           Y_UPIP_TXT, ul, &Font8, WHITE, BLACK);
     draw_vline(X_SPLIT, Y_H3, Y_H4);
-    Paint_DrawString_EN(X_SPLIT + 3, Y_NET_TXT, nr, &Font8, WHITE, BLACK);
+    Paint_DrawString_EN(X_SPLIT + 3, Y_UPIP_TXT, ur, &Font8, WHITE, BLACK);
     draw_hline(Y_H4, true);
-
-    // UPTIME | NET speed
-    char ul[24], ur[24];
-    int up_h = static_cast<int>(m.uptime_s / 3600);
-    int up_m = static_cast<int>((m.uptime_s % 3600) / 60);
-    snprintf(ul, sizeof(ul), "UP    %02dh%02dm", up_h, up_m);
-    snprintf(ur, sizeof(ur), "RX/TX %.0f/%.0fK",
-             m.net_rx_kbps, m.net_tx_kbps);
-    Paint_DrawString_EN(2,          Y_UP_TXT, ul, &Font8, WHITE, BLACK);
-    draw_vline(X_SPLIT, Y_H4, Y_H5);
-    Paint_DrawString_EN(X_SPLIT + 3, Y_UP_TXT, ur, &Font8, WHITE, BLACK);
-    draw_hline(Y_H5);
 }
 
-void UIEngine::draw_log(const SystemMetrics &m) {
+void UIEngine::push_terminal_line(const char *line) {
+    for (int i = static_cast<int>(terminal_lines_.size()) - 1; i > 0; --i) {
+        terminal_lines_[i] = terminal_lines_[i - 1];
+    }
+    terminal_lines_[0] = line;
+}
+
+void UIEngine::draw_terminal(const SystemMetrics &m) {
     bool warn_cpu  = m.cpu_pct    > 85.0f;
     bool warn_temp = m.cpu_temp_c > 70.0f;
     bool warn_mem  = m.mem_pct    > 85;
     bool net_up    = (m.ip != "NO_LINK");
-    int  up_h      = static_cast<int>(m.uptime_s / 3600);
-    int  up_m      = static_cast<int>((m.uptime_s % 3600) / 60);
 
-    char hdr[16];
-    snprintf(hdr, sizeof(hdr), "EVT LOG  SEQ:%04d", seq_);
-    Paint_DrawString_EN(2, Y_LOG_HDR, hdr, &Font8, WHITE, BLACK);
-    draw_hline(Y_H6, true);
+    char line[64];
+    if (warn_temp || warn_cpu || warn_mem) {
+        snprintf(line, sizeof(line), "> %s ALERT %s",
+                 m.time_str,
+                 warn_temp ? "THERMAL_LIMIT" :
+                 warn_cpu  ? "CPU_LOAD_HIGH" :
+                             "MEM_PRESSURE");
+    } else if (!net_up) {
+        snprintf(line, sizeof(line), "> %s NET   DOWN DHCP_WAIT", m.time_str);
+    } else {
+        switch (frame_count_ % 16) {
+        case 0:
+            snprintf(line, sizeof(line), "> %s SYS   C=%4.1f%% T=%4.1fC M=%3d%%",
+                     m.time_str, m.cpu_pct, m.cpu_temp_c, m.mem_pct);
+            break;
+        case 1:
+            snprintf(line, sizeof(line), "> %s LOAD  %0.2f/%0.2f/%0.2f",
+                     m.time_str, m.load1, m.load5, m.load15);
+            break;
+        case 2:
+            snprintf(line, sizeof(line), "> %s PROC  %d/%d GOV=%s",
+                     m.time_str, m.process_running, m.process_total, m.cpu_governor.c_str());
+            break;
+        case 3:
+            snprintf(line, sizeof(line), "> %s CPU   F=%dMHz THR=%s",
+                     m.time_str, m.cpu_freq_mhz, m.throttle_flags.c_str());
+            break;
+        case 4:
+            snprintf(line, sizeof(line), "> %s THERM CPU=%4.1f GPU=%4.1f",
+                     m.time_str, m.cpu_temp_c, m.gpu_temp_c);
+            break;
+        case 5:
+            snprintf(line, sizeof(line), "> %s PWR   CORE=%.3fV", m.time_str, m.core_volt_v);
+            break;
+        case 6:
+            snprintf(line, sizeof(line), "> %s RAM   F=%d A=%d C=%d B=%d",
+                     m.time_str, m.mem_free_mb, m.mem_available_mb, m.mem_cached_mb, m.mem_buffers_mb);
+            break;
+        case 7:
+            snprintf(line, sizeof(line), "> %s MEM   SWP=%d/%d DSK=%d%%",
+                     m.time_str, m.swap_used_mb, m.swap_total_mb, m.disk_root_pct);
+            break;
+        case 8:
+            snprintf(line, sizeof(line), "> %s SDIO  R=%lluk W=%lluk",
+                     m.time_str, m.sd_read_kb, m.sd_write_kb);
+            break;
+        case 9:
+            snprintf(line, sizeof(line), "> %s SD    LIFE=%s",
+                     m.time_str, m.sd_life_time.empty() ? "unknown" : m.sd_life_time.c_str());
+            break;
+        case 10:
+            if (m.wifi_rssi_dbm > -200) {
+                snprintf(line, sizeof(line), "> %s WIFI  Q=%d R=%d N=%d",
+                         m.time_str, m.wifi_link_quality, m.wifi_rssi_dbm, m.wifi_noise_dbm);
+            } else {
+                snprintf(line, sizeof(line), "> %s WIFI  R=N/A SSID=%.16s", m.time_str, m.ssid.c_str());
+            }
+            break;
+        case 11:
+            snprintf(line, sizeof(line), "> %s NET   LOSS=%0.1f RX/TX=%5.0f/%5.0f",
+                     m.time_str, m.packet_loss_pct, m.net_rx_kbps, m.net_tx_kbps);
+            break;
+        case 12:
+            snprintf(line, sizeof(line), "> %s LOOP  JIT=%dms MISS=%d",
+                     m.time_str, m.heartbeat_jitter_ms, m.heartbeat_missed_ticks);
+            break;
+        case 13:
+            snprintf(line, sizeof(line), "> %s ID    BT=%.17s SR=%.12s",
+                     m.time_str, m.bt_addr.c_str(), m.pi_serial.c_str());
+            break;
+        case 14:
+            snprintf(line, sizeof(line), "> %s BT    UP=%s PAIR=%d CONN=%d",
+                     m.time_str, m.bt_up ? "Y" : "N", m.bt_paired_count, m.bt_connected_count);
+            break;
+        default:
+            snprintf(line, sizeof(line), "> %s HW    %.14s REV=%.8s",
+                     m.time_str, m.pi_model.c_str(), m.pi_revision.c_str());
+            break;
+        }
+    }
 
-    char ev0[48], ev1[48], ev2[52];
-    snprintf(ev0, sizeof(ev0), "> T+00:00  BOOT OK  KERNEL READY");
-    snprintf(ev1, sizeof(ev1), "> T+00:01  NET %-4s  IFACE %s",
-             net_up ? "UP" : "DOWN", m.iface.c_str());
-    snprintf(ev2, sizeof(ev2), "> T+%02d:%02d  %s",
-             up_h, up_m,
-             warn_temp ? "!! THERMAL LIMIT EXCEEDED" :
-             warn_cpu  ? "!! HIGH CPU LOAD DETECTED" :
-             warn_mem  ? "!! MEMORY PRESSURE HIGH  " :
-                         "ALL SUBSYSTEMS NOMINAL   ");
+    push_terminal_line(line);
+    if (!terminal_seeded_) {
+        char init1[64];
+        char init2[64];
+        snprintf(init1, sizeof(init1), "> %s LIVE TELEMETRY STREAM STARTED", m.time_str);
+        snprintf(init2, sizeof(init2), "> %s REFRESH 1S PARTIAL ACTIVE", m.time_str);
+        push_terminal_line(init1);
+        push_terminal_line(init2);
+        terminal_seeded_ = true;
+    }
 
-    Paint_DrawString_EN(2, Y_LOG_L0, ev0, &Font8, WHITE, BLACK);
-    Paint_DrawString_EN(2, Y_LOG_L1, ev1, &Font8, WHITE, BLACK);
+    Paint_DrawString_EN(2, Y_LOG_L0, terminal_lines_[0].c_str(), &Font8, WHITE, BLACK);
+    Paint_DrawString_EN(2, Y_LOG_L1, terminal_lines_[1].c_str(), &Font8, WHITE, BLACK);
+    Paint_DrawString_EN(2, Y_LOG_L2, terminal_lines_[2].c_str(), &Font8, WHITE, BLACK);
+    Paint_DrawString_EN(2, Y_LOG_L3, terminal_lines_[3].c_str(), &Font8, WHITE, BLACK);
+    Paint_DrawString_EN(2, Y_LOG_L4, terminal_lines_[4].c_str(), &Font8, WHITE, BLACK);
+    Paint_DrawString_EN(2, Y_LOG_L5, terminal_lines_[5].c_str(), &Font8, WHITE, BLACK);
 }
 
-void UIEngine::draw_footer(const SystemMetrics &m) {
-    bool warn = m.cpu_pct > 85.0f || m.cpu_temp_c > 70.0f || m.mem_pct > 85;
-    int  up_h = static_cast<int>(m.uptime_s / 3600);
-    int  up_m = static_cast<int>((m.uptime_s % 3600) / 60);
-
-    draw_hline(Y_H7);
-
-    char left[40], right[12];
-    snprintf(left,  sizeof(left),  "STA:%-7s  T+%02dh%02dm",
-             warn ? "WARN" : "NOMINAL", up_h, up_m);
-    snprintf(right, sizeof(right), "v1.0.0");
-
-    Paint_DrawString_EN(2,   Y_FOOTER_TXT, left,  &Font8, WHITE, BLACK);
-    Paint_DrawString_EN(215, Y_FOOTER_TXT, right, &Font8, WHITE, BLACK);
+void UIEngine::render_shutdown(const SystemMetrics &m, const char *reason) {
+    char line[64];
+    char persist[64];
+    snprintf(line, sizeof(line), "> %s SHUTDOWN SIGNAL=%s", m.time_str, reason ? reason : "UNKNOWN");
+    snprintf(persist, sizeof(persist), "> %s LAST FRAME PERSISTED", m.time_str);
+    push_terminal_line(line);
+    push_terminal_line(persist);
+    render(m);
+    EPD_2in13_V4_Display_Base(buffer_);
 }
 
 // ---------------------------------------------------------------------------
@@ -236,14 +299,21 @@ void UIEngine::draw_footer(const SystemMetrics &m) {
 // ---------------------------------------------------------------------------
 
 void UIEngine::render(const SystemMetrics &m) {
-    ++seq_;
+    ++frame_count_;
     Paint_Clear(BLACK);
 
     draw_header(m);
     draw_metrics(m);
-    draw_network(m);
-    draw_log(m);
-    draw_footer(m);
+    draw_terminal(m);
 
-    EPD_2in13_V4_Display_Base(buffer_);
+    const bool do_full_refresh =
+        (frame_count_ == 1) || (frame_count_ % FULL_REFRESH_EVERY_N_FRAMES == 0);
+
+    if (do_full_refresh) {
+        EPD_2in13_V4_Display_Base(buffer_);
+        return;
+    }
+
+    // Partial refresh removes the full-screen blink between updates.
+    EPD_2in13_V4_Display_Partial(buffer_);
 }

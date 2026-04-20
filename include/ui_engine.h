@@ -1,5 +1,8 @@
 #pragma once
 
+#include <array>
+#include <string>
+
 #include "telemetry.h"
 
 extern "C" {
@@ -18,18 +21,22 @@ public:
 
     bool init();
     void render(const SystemMetrics &m);
+    void render_shutdown(const SystemMetrics &m, const char *reason);
     void sleep();
 
 private:
     UBYTE *buffer_;
-    int    seq_;
+    int    frame_count_;
+    std::array<std::string, 6> terminal_lines_;
+    bool terminal_seeded_;
+
+    static constexpr int FULL_REFRESH_EVERY_N_FRAMES = 180;
 
     void draw_hline(int y, bool dotted = false);
     void draw_vline(int x, int y1, int y2);
     void draw_bar(int x, int y, int w, int h, float pct);
     void draw_header(const SystemMetrics &m);
     void draw_metrics(const SystemMetrics &m);
-    void draw_network(const SystemMetrics &m);
-    void draw_log(const SystemMetrics &m);
-    void draw_footer(const SystemMetrics &m);
+    void draw_terminal(const SystemMetrics &m);
+    void push_terminal_line(const char *line);
 };
