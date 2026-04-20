@@ -1,15 +1,20 @@
 [Unit]
 Description=Sentinel System Monitor
-After=network.target
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/sentinel
-Restart=on-failure
+WorkingDirectory=/usr/local/bin
+User=root
+Group=root
+Restart=always
 RestartSec=5
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sentinel
+NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target

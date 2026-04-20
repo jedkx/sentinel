@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "$EUID" -eq 0 ]]; then
+  echo "[ERR] Do not run as root. Use your pi user with sudo permissions."
+  exit 1
+fi
+
 BINARY_SRC="build/sentinel"
 BINARY_DST="/usr/local/bin/sentinel"
 SERVICE_SRC="scripts/sentinel.service"
@@ -29,4 +34,6 @@ sudo systemctl daemon-reload
 sudo systemctl enable sentinel.service
 sudo systemctl restart sentinel.service
 
-echo "[OK] Done. Check status with: sudo systemctl status sentinel"
+echo "[OK] Done."
+echo "[*] Service status: sudo systemctl status sentinel --no-pager"
+echo "[*] Live logs:      sudo journalctl -u sentinel -f"
