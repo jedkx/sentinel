@@ -23,6 +23,7 @@ LOGROTATE_DST="/etc/logrotate.d/sentinel"
 EPD_REQUIRED_FILE="vendor/e-Paper/RaspberryPi_JetsonNano/c/lib/Config/DEV_Config.c"
 WAVESHARE_REPO_URL="${WAVESHARE_REPO_URL:-https://github.com/waveshareteam/e-Paper.git}"
 WAVESHARE_REPO_REF="${WAVESHARE_REPO_REF:-master}"
+SENTINEL_ENABLE_ON_BOOT="${SENTINEL_ENABLE_ON_BOOT:-1}"
 
 require_file() {
   local path="$1"
@@ -107,11 +108,15 @@ ${SUDO} install -m 644 "${LOGROTATE_SRC}" "${LOGROTATE_DST}"
 
 echo "[*] Reloading and restarting service..."
 ${SUDO} systemctl daemon-reload
-${SUDO} systemctl enable sentinel.service
+if [[ "${SENTINEL_ENABLE_ON_BOOT}" == "1" ]]; then
+  ${SUDO} systemctl enable sentinel.service
+else
+  ${SUDO} systemctl disable sentinel.service >/dev/null 2>&1 || true
+  echo "[*] Auto-start on boot disabled (SENTINEL_ENABLE_ON_BOOT=${SENTINEL_ENABLE_ON_BOOT})."
+fi
 ${SUDO} systemctl restart sentinel.service
 
 echo "[*] Verifying deployment..."
-${SUDO} systemctl is-enabled sentinel.service >/dev/null
 ${SUDO} systemctl is-active sentinel.service >/dev/null
 
 echo "[OK] Sentinel deployed successfully."
