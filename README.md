@@ -22,6 +22,16 @@ That script is the one-command deploy path: installs apt deps (`cmake`, `build-e
 
 You can run it as normal user (with sudo) or root.
 
+Boot auto-start is configurable at install time:
+
+```bash
+# default (enable at boot)
+SENTINEL_ENABLE_ON_BOOT=1 ./scripts/install.sh
+
+# install + run now, but do not start automatically on next boot
+SENTINEL_ENABLE_ON_BOOT=0 ./scripts/install.sh
+```
+
 ## Build without installing
 
 ```bash
