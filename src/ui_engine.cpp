@@ -4,10 +4,14 @@
 #include <cstdlib>
 #include <cstring>
 
+#ifdef HAVE_WAVESHARE
 extern "C" {
     #include "DEV_Config.h"
     #include "GUI_Paint.h"
 }
+#endif
+
+#ifdef HAVE_WAVESHARE
 
 // ---------------------------------------------------------------------------
 // Layout constants  (all Y coords relative to horizontal canvas 250x122)
@@ -46,7 +50,8 @@ static constexpr int X_SPLIT       = 124;
 // Constructor / destructor
 // ---------------------------------------------------------------------------
 
-UIEngine::UIEngine() : buffer_(nullptr), frame_count_(0), terminal_seeded_(false) {
+UIEngine::UIEngine()
+    : buffer_(nullptr), frame_count_(0), terminal_seeded_(false) {
     terminal_lines_.fill("> WAITING FOR TELEMETRY ...");
 }
 
@@ -184,7 +189,10 @@ void UIEngine::draw_terminal(const SystemMetrics &m) {
     bool net_up    = (m.ip != "NO_LINK");
 
     char line[64];
-    if (warn_temp || warn_cpu || warn_mem) {
+    if (!m.event_line.empty() && m.event_line != last_event_line_) {
+        snprintf(line, sizeof(line), "> EXT   %.56s", m.event_line.c_str());
+        last_event_line_ = m.event_line;
+    } else if (warn_temp || warn_cpu || warn_mem) {
         snprintf(line, sizeof(line), "> %s ALERT %s",
                  m.time_str,
                  warn_temp ? "THERMAL_LIMIT" :
@@ -242,8 +250,13 @@ void UIEngine::draw_terminal(const SystemMetrics &m) {
             }
             break;
         case 11:
-            snprintf(line, sizeof(line), "> %s NET   LOSS=%0.1f RX/TX=%5.0f/%5.0f",
-                     m.time_str, m.packet_loss_pct, m.net_rx_kbps, m.net_tx_kbps);
+            if (m.packet_loss_pct < 0.0f) {
+                snprintf(line, sizeof(line), "> %s NET   LOSS=N/A IF=%.8s",
+                         m.time_str, m.iface.c_str());
+            } else {
+                snprintf(line, sizeof(line), "> %s NET   LOSS=%0.1f%% IF=%.8s",
+                         m.time_str, m.packet_loss_pct, m.iface.c_str());
+            }
             break;
         case 12:
             snprintf(line, sizeof(line), "> %s LOOP  JIT=%dms MISS=%d",
@@ -306,14 +319,28 @@ void UIEngine::render(const SystemMetrics &m) {
     draw_metrics(m);
     draw_terminal(m);
 
-    const bool do_full_refresh =
-        (frame_count_ == 1) || (frame_count_ % FULL_REFRESH_EVERY_N_FRAMES == 0);
-
-    if (do_full_refresh) {
+    // Do one full refresh on the first frame, then stay blink-free.
+    if (frame_count_ == 1) {
         EPD_2in13_V4_Display_Base(buffer_);
         return;
     }
 
-    // Partial refresh removes the full-screen blink between updates.
+    // Keep runtime updates blink-free.
     EPD_2in13_V4_Display_Partial(buffer_);
 }
+#else
+UIEngine::UIEngine()
+    : buffer_(nullptr), frame_count_(0), terminal_seeded_(false) {}
+UIEngine::~UIEngine() = default;
+bool UIEngine::init() { return false; }
+void UIEngine::sleep() {}
+void UIEngine::render(const SystemMetrics &) {}
+void UIEngine::render_shutdown(const SystemMetrics &, const char *) {}
+void UIEngine::draw_hline(int, bool) {}
+void UIEngine::draw_vline(int, int, int) {}
+void UIEngine::draw_bar(int, int, int, int, float) {}
+void UIEngine::draw_header(const SystemMetrics &) {}
+void UIEngine::draw_metrics(const SystemMetrics &) {}
+void UIEngine::draw_terminal(const SystemMetrics &) {}
+void UIEngine::push_terminal_line(const char *) {}
+#endif

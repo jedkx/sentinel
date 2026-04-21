@@ -16,8 +16,6 @@ struct SystemMetrics {
     int   mem_buffers_mb;
     int   swap_total_mb;
     int   swap_used_mb;
-    float net_rx_kbps;   // receive KB/s
-    float net_tx_kbps;   // transmit KB/s
     std::string ip;
     std::string iface;
     std::string ssid;
@@ -53,6 +51,7 @@ struct SystemMetrics {
     char  time_str[12];  // HH:MM:SS
     char  date_str[14];  // YYYY-MM-DD
     char  boot_time_str[12]; // HH:MM:SS
+    std::string event_line;
 };
 
 void collect_metrics(SystemMetrics &m);

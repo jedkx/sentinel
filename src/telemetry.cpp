@@ -1,13 +1,9 @@
 #include "telemetry.h"
 
 #include <cstdio>
-#include <array>
-#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <fstream>
-#include <future>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <ifaddrs.h>
@@ -53,9 +49,21 @@ static float read_cpu_temp() {
 }
 
 static float parse_first_float(const std::string &s) {
-    std::smatch m;
-    std::regex r("([0-9]+\\.?[0-9]*)");
-    if (std::regex_search(s, m, r) && m.size() > 1) return std::stof(m[1].str());
+    bool seen_digit = false;
+    std::string token;
+    token.reserve(16);
+    for (char c : s) {
+        const bool digit = (c >= '0' && c <= '9');
+        if (digit || (c == '.' && seen_digit)) {
+            token.push_back(c);
+            if (digit) seen_digit = true;
+            continue;
+        }
+        if (seen_digit) break;
+    }
+    if (!token.empty()) {
+        return std::stof(token);
+    }
     return 0.0f;
 }
 
@@ -138,58 +146,24 @@ static void read_swap(SystemMetrics &m) {
     m.swap_used_mb = static_cast<int>(used_kb / 1024);
 }
 
-static void read_net_counters(const std::string &iface,
-                              unsigned long long &rx, unsigned long long &tx) {
-    if (iface == "none") {
-        rx = 0;
-        tx = 0;
-        return;
-    }
-
-    std::ifstream f("/proc/net/dev");
-    std::string line;
-    while (std::getline(f, line)) {
-        if (line.find(iface) == std::string::npos) continue;
-        const char *p = line.c_str();
-        while (*p && *p != ':') p++;
-        if (*p) p++;
-        sscanf(p, "%llu %*u %*u %*u %*u %*u %*u %*u %llu", &rx, &tx);
-        return;
-    }
-    rx = tx = 0;
-}
-
-static std::string read_iface() {
+static void read_iface_ip(std::string &iface, std::string &ip) {
+    iface = "none";
+    ip = "NO_LINK";
     struct ifaddrs *ifa = nullptr;
-    if (getifaddrs(&ifa) != 0) return "none";
+    if (getifaddrs(&ifa) != 0) return;
     for (auto *i = ifa; i; i = i->ifa_next) {
         if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET) continue;
         if (std::string(i->ifa_name) == "lo") continue;
-        std::string name(i->ifa_name);
-        freeifaddrs(ifa);
-        return name;
-    }
-    if (ifa) freeifaddrs(ifa);
-    return "none";
-}
-
-static std::string read_ip(const std::string &iface) {
-    if (iface == "none") return "NO_LINK";
-
-    struct ifaddrs *ifa = nullptr;
-    if (getifaddrs(&ifa) != 0) return "NO_LINK";
-    for (auto *i = ifa; i; i = i->ifa_next) {
-        if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET) continue;
-        if (std::string(i->ifa_name) != iface) continue;
+        iface = i->ifa_name;
         char buf[INET_ADDRSTRLEN];
         inet_ntop(AF_INET,
                   &reinterpret_cast<struct sockaddr_in *>(i->ifa_addr)->sin_addr,
                   buf, sizeof(buf));
+        ip = std::string(buf);
         freeifaddrs(ifa);
-        return std::string(buf);
+        return;
     }
     if (ifa) freeifaddrs(ifa);
-    return "NO_LINK";
 }
 
 static std::string run_command(const char *cmd) {
@@ -260,12 +234,15 @@ static void read_wifi_signal(const std::string &iface, int &link, int &level, in
     std::string line;
     while (std::getline(f, line)) {
         if (line.find(iface + ":") == std::string::npos) continue;
-        std::smatch m;
-        std::regex r("^\\s*[^:]+:\\s*\\d+\\s+([0-9\\.]+)\\s+([\\-0-9\\.]+)\\s+([\\-0-9\\.]+)");
-        if (std::regex_search(line, m, r) && m.size() > 3) {
-            link = static_cast<int>(std::stof(m[1].str()));
-            level = static_cast<int>(std::stof(m[2].str()));
-            noise = static_cast<int>(std::stof(m[3].str()));
+        const char *p = std::strchr(line.c_str(), ':');
+        if (!p) continue;
+        ++p;
+        int status = 0;
+        float f_link = 0.0f, f_level = 0.0f, f_noise = 0.0f;
+        if (std::sscanf(p, "%d %f %f %f", &status, &f_link, &f_level, &f_noise) == 4) {
+            link = static_cast<int>(f_link);
+            level = static_cast<int>(f_level);
+            noise = static_cast<int>(f_noise);
             return;
         }
     }
@@ -332,22 +309,6 @@ static void read_bluetooth(SystemMetrics &m) {
         std::string state = read_file_trimmed("/sys/class/bluetooth/hci0/operstate");
         m.bt_up = (state == "up");
     }
-
-    const std::string devices = run_command("bluetoothctl devices 2>/dev/null");
-    std::istringstream ds(devices);
-    std::string l;
-    while (std::getline(ds, l)) {
-        if (l.find("Device ") == 0) m.bt_paired_count++;
-    }
-
-    const std::string info = run_command("bluetoothctl info 2>/dev/null");
-    if (!info.empty() && info.find("Connected: yes") != std::string::npos) {
-        m.bt_connected_count = 1;
-    }
-}
-
-static std::string read_default_gateway() {
-    return trim(run_command("ip route | awk '/default/ {print $3; exit}' 2>/dev/null"));
 }
 
 static std::string trim(std::string s) {
@@ -368,20 +329,16 @@ static std::string read_ssid(const std::string &iface) {
 
     cmd = "iw dev " + iface + " link 2>/dev/null";
     const std::string link = run_command(cmd.c_str());
-    std::smatch match;
-    const std::regex ssid_re("SSID: ([^\\n\\r]+)");
-    if (std::regex_search(link, match, ssid_re) && match.size() > 1) {
-        return trim(match[1].str());
+    const std::string marker = "SSID:";
+    const std::size_t pos = link.find(marker);
+    if (pos != std::string::npos) {
+        std::size_t start = pos + marker.size();
+        while (start < link.size() && (link[start] == ' ' || link[start] == '\t')) ++start;
+        std::size_t end = link.find_first_of("\r\n", start);
+        if (end == std::string::npos) end = link.size();
+        return trim(link.substr(start, end - start));
     }
     return "UNKNOWN";
-}
-
-static bool parse_packet_loss(const std::string &s, float &packet_loss_pct) {
-    std::smatch m;
-    std::regex loss_re("([0-9]+\\.?[0-9]*)% packet loss");
-    if (!std::regex_search(s, m, loss_re) || m.size() < 2) return false;
-    packet_loss_pct = std::stof(m[1].str());
-    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -389,17 +346,6 @@ static bool parse_packet_loss(const std::string &s, float &packet_loss_pct) {
 // ---------------------------------------------------------------------------
 
 void collect_metrics(SystemMetrics &m) {
-    static time_t last_net_sample_ts = 0;
-    static float last_rx_kbps = 0.0f;
-    static float last_tx_kbps = 0.0f;
-    static unsigned long long prev_rx_bytes = 0;
-    static unsigned long long prev_tx_bytes = 0;
-    static time_t prev_counter_ts = 0;
-    static const int PING_INTERVAL_S = 60;
-    static std::future<std::array<float, 2>> ping_task;
-    static bool ping_running = false;
-    static time_t last_ping_ts = 0;
-    static float packet_loss_pct = 0.0f;
     time_t now = time(nullptr);
     static time_t last_fast_ts = 0;
     static time_t last_medium_ts = 0;
@@ -419,26 +365,26 @@ void collect_metrics(SystemMetrics &m) {
         if (cache.mem_pct < 0) cache.mem_pct = 0;
         if (cache.mem_pct > 100) cache.mem_pct = 100;
 
-        cache.iface = read_iface();
-        cache.ip = read_ip(cache.iface);
+        read_iface_ip(cache.iface, cache.ip);
         read_load_and_process(cache);
         cache.uptime_raw_s = 0.0;
         read_uptime_raw(cache);
         last_fast_ts = now;
     }
 
-    if (last_medium_ts == 0 || now - last_medium_ts >= 5) {
+    if (last_medium_ts == 0 || now - last_medium_ts >= 10) {
         cache.cpu_freq_mhz = read_cpu_freq_mhz();
         cache.cpu_governor = read_cpu_governor();
         read_wifi_signal(cache.iface, cache.wifi_link_quality, cache.wifi_rssi_dbm, cache.wifi_noise_dbm);
         cache.throttle_flags = trim(run_command("vcgencmd get_throttled 2>/dev/null | awk -F= '{print $2}'"));
-        if (cache.throttle_flags.empty()) cache.throttle_flags = "0x0";
+        if (cache.throttle_flags.empty()) cache.throttle_flags = "na";
         cache.gpu_temp_c = read_gpu_temp();
+        if (cache.gpu_temp_c <= 0.0f) cache.gpu_temp_c = cache.cpu_temp_c;
         cache.core_volt_v = read_core_volt();
         last_medium_ts = now;
     }
 
-    if (last_slow_ts == 0 || now - last_slow_ts >= 30) {
+    if (last_slow_ts == 0 || now - last_slow_ts >= 45) {
         cache.ssid = read_ssid(cache.iface);
         cache.disk_root_pct = read_disk_root_pct();
         read_sd_stats(cache);
@@ -448,7 +394,7 @@ void collect_metrics(SystemMetrics &m) {
         last_slow_ts = now;
     }
 
-    if (last_very_slow_ts == 0 || now - last_very_slow_ts >= 60) {
+    if (last_very_slow_ts == 0 || now - last_very_slow_ts >= 120) {
         read_bluetooth(cache);
         if (!hardware_cached) {
             read_hardware_identity(cache);
@@ -457,49 +403,13 @@ void collect_metrics(SystemMetrics &m) {
         last_very_slow_ts = now;
     }
 
-    if ((now - last_net_sample_ts) >= 30 || last_net_sample_ts == 0) {
-        unsigned long long rx_bytes = 0;
-        unsigned long long tx_bytes = 0;
-        read_net_counters(cache.iface, rx_bytes, tx_bytes);
-        if (prev_counter_ts > 0 && now > prev_counter_ts) {
-            const float dt = static_cast<float>(now - prev_counter_ts);
-            last_rx_kbps = static_cast<float>(rx_bytes - prev_rx_bytes) / 1024.0f / dt;
-            last_tx_kbps = static_cast<float>(tx_bytes - prev_tx_bytes) / 1024.0f / dt;
-        }
-        prev_rx_bytes = rx_bytes;
-        prev_tx_bytes = tx_bytes;
-        prev_counter_ts = now;
-        last_net_sample_ts = now;
+    static bool hostname_cached = false;
+    if (!hostname_cached) {
+        char hbuf[64] = "sentinel";
+        gethostname(hbuf, sizeof(hbuf));
+        cache.hostname = std::string(hbuf);
+        hostname_cached = true;
     }
-    m.net_rx_kbps = last_rx_kbps;
-    m.net_tx_kbps = last_tx_kbps;
-
-    if (ping_running &&
-        ping_task.wait_for(std::chrono::milliseconds(0)) == std::future_status::ready) {
-        const auto values = ping_task.get();
-        ping_running = false;
-        if (values[0] > 0.0f) {
-            packet_loss_pct = values[1];
-        }
-    }
-
-    if (!ping_running && (now - last_ping_ts >= PING_INTERVAL_S || last_ping_ts == 0)) {
-        ping_running = true;
-        last_ping_ts = now;
-        const std::string gw = read_default_gateway();
-        ping_task = std::async(std::launch::async, [gw]() -> std::array<float, 2> {
-            if (gw.empty()) return {0.0f, 0.0f};
-            const std::string cmd = "timeout 8s ping -q -c 4 " + gw + " 2>/dev/null";
-            const std::string out = run_command(cmd.c_str());
-            float loss = 0.0f;
-            if (!parse_packet_loss(out, loss)) return {0.0f, 0.0f};
-            return {1.0f, loss};
-        });
-    }
-
-    char hbuf[64] = "sentinel";
-    gethostname(hbuf, sizeof(hbuf));
-    cache.hostname = std::string(hbuf);
 
     struct sysinfo si;
     sysinfo(&si);
@@ -517,9 +427,7 @@ void collect_metrics(SystemMetrics &m) {
     tm *bt = localtime(&boot_ts);
     strftime(cache.boot_time_str, sizeof(cache.boot_time_str), "%H:%M:%S", bt);
 
-    cache.net_rx_kbps = last_rx_kbps;
-    cache.net_tx_kbps = last_tx_kbps;
-    cache.packet_loss_pct = packet_loss_pct;
+    cache.packet_loss_pct = -1.0f;
 
     m = cache;
 }
