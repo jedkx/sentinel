@@ -31,6 +31,7 @@ public:
 private:
     UBYTE *buffer_;
     int    frame_count_;
+    int    full_refresh_every_n_frames_;
     std::array<std::string, 6> terminal_lines_;
     bool terminal_seeded_;
     std::string last_event_line_;

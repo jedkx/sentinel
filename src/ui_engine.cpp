@@ -51,7 +51,14 @@ static constexpr int X_SPLIT       = 124;
 // ---------------------------------------------------------------------------
 
 UIEngine::UIEngine()
-    : buffer_(nullptr), frame_count_(0), terminal_seeded_(false) {
+    : buffer_(nullptr), frame_count_(0), full_refresh_every_n_frames_(180), terminal_seeded_(false) {
+    const char *env = std::getenv("SENTINEL_FULL_REFRESH_EVERY_N_FRAMES");
+    if (env && *env) {
+        int v = std::atoi(env);
+        if (v >= 0) {
+            full_refresh_every_n_frames_ = v;
+        }
+    }
     terminal_lines_.fill("> WAITING FOR TELEMETRY ...");
 }
 
@@ -319,8 +326,10 @@ void UIEngine::render(const SystemMetrics &m) {
     draw_metrics(m);
     draw_terminal(m);
 
-    // Do one full refresh on the first frame, then stay blink-free.
-    if (frame_count_ == 1) {
+    const bool do_full_refresh =
+        (frame_count_ == 1) ||
+        (full_refresh_every_n_frames_ > 0 && frame_count_ % full_refresh_every_n_frames_ == 0);
+    if (do_full_refresh) {
         EPD_2in13_V4_Display_Base(buffer_);
         return;
     }
@@ -330,7 +339,7 @@ void UIEngine::render(const SystemMetrics &m) {
 }
 #else
 UIEngine::UIEngine()
-    : buffer_(nullptr), frame_count_(0), terminal_seeded_(false) {}
+    : buffer_(nullptr), frame_count_(0), full_refresh_every_n_frames_(180), terminal_seeded_(false) {}
 UIEngine::~UIEngine() = default;
 bool UIEngine::init() { return false; }
 void UIEngine::sleep() {}
