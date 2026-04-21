@@ -5,10 +5,14 @@
 
 #include "telemetry.h"
 
+#ifdef HAVE_WAVESHARE
 extern "C" {
     #include "EPD_2in13_V4.h"
     #include "GUI_Paint.h"
 }
+#else
+using UBYTE = unsigned char;
+#endif
 
 // Canvas dimensions when mounted horizontally (rotation=90)
 static constexpr int CANVAS_W = 250;
@@ -29,8 +33,7 @@ private:
     int    frame_count_;
     std::array<std::string, 6> terminal_lines_;
     bool terminal_seeded_;
-
-    static constexpr int FULL_REFRESH_EVERY_N_FRAMES = 180;
+    std::string last_event_line_;
 
     void draw_hline(int y, bool dotted = false);
     void draw_vline(int x, int y1, int y2);

@@ -1,0 +1,13 @@
+/var/log/sentinel.log {
+    weekly
+    rotate 7
+    maxsize 10M
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 root root
+    postrotate
+        /bin/systemctl kill -s HUP sentinel.service >/dev/null 2>&1 || true
+    endscript
+}

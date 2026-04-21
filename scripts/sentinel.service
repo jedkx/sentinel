@@ -5,6 +5,15 @@ After=network-online.target
 
 [Service]
 Type=simple
+Environment="SENTINEL_LOG_FILE=/var/log/sentinel.log"
+Environment="SENTINEL_WATCH="
+Environment="SENTINEL_DISABLE_DISPLAY=0"
+Environment="SENTINEL_LOG_INTERVAL_S=2"
+Environment="SENTINEL_WATCH_MAX_EVENTS=32"
+Environment="SENTINEL_WEB_ENABLE=0"
+Environment="SENTINEL_WEB_BIND=127.0.0.1"
+Environment="SENTINEL_WEB_PORT=9090"
+Environment="SENTINEL_WEB_TOKEN="
 ExecStart=/usr/local/bin/sentinel
 WorkingDirectory=/usr/local/bin
 User=root
@@ -15,6 +24,12 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=sentinel
 NoNewPrivileges=true
+ProtectHome=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target
